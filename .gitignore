@@ -1,0 +1,73 @@
+# 虚拟环境
+venv/
+env/
+pyvenv.cfg
+*.py[cod]
+*$py.class
+
+# IDE配置
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 构建目录
+build/
+dist/
+*.spec
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 日志文件
+*.log
+*.log.*
+
+# 测试覆盖率
+.coverage
+coverage.xml
+htmlcov/
+
+# 临时文件
+*.tmp
+*.temp
+.temp/
+.tmp/
+
+# 环境变量
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# 数据库文件
+*.sqlite3
+*.db
+
+# 缓存
+__pycache__/
+.cache/
+
+# 文档
+docs/build/
+
+# 其他
+*.egg-info/
+*.egg
+*.eggs/
+bin/
+lib/
+include/
+
+# Windows可执行文件
+*.exe
+*.dll
+*.so
+
+# macOS可执行文件和安装包
+*.app
+*.dmg
+*.pkg
