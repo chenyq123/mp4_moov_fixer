@@ -220,18 +220,100 @@ class MP4MoovFixer:
         try:
             cmd = [self.ffmpeg_path, "-i", input_file, "-c", "copy", "-movflags", 
                    "+faststart", "-y", output_file]
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # 检查转换后视频的大小
+            if os.path.exists(output_file):
+                input_size = os.path.getsize(input_file)
+                output_size = os.path.getsize(output_file)
+                size_diff_percent = abs(input_size - output_size) / input_size * 100
+                
+                # 如果输出文件大小与输入文件相差超过10%，视为转换失败
+                if size_diff_percent > 10:
+                    self._log(f"警告：转换后文件大小异常 {input_file}")
+                    self._log(f"  - 原始大小: {input_size/1024/1024:.2f} MB")
+                    self._log(f"  - 转换后大小: {output_size/1024/1024:.2f} MB")
+                    self._log(f"  - 差异: {size_diff_percent:.2f}%")
+                    
+                    # 删除可能损坏的输出文件
+                    try:
+                        os.remove(output_file)
+                        self._log(f"已删除可能损坏的输出文件: {output_file}")
+                    except Exception as del_err:
+                        self._log(f"无法删除可能损坏的输出文件 {output_file}: {del_err}")
+                    return False
+                else:
+                    self._log(f"文件大小校验通过: {os.path.basename(input_file)}")
+                    self._log(f"  - 原始大小: {input_size/1024/1024:.2f} MB, 转换后: {output_size/1024/1024:.2f} MB")
+            
             return True
         except Exception as e:
             self._log(f"处理文件失败 {input_file}: {e}")
+            # 删除可能残留的输出文件
+            if os.path.exists(output_file):
+                try:
+                    os.remove(output_file)
+                    self._log(f"已删除残留的输出文件: {output_file}")
+                except Exception as del_err:
+                    self._log(f"无法删除残留的输出文件 {output_file}: {del_err}")
             return False
+    
+    def _check_needs_processing(self, mp4_file):
+        """检查MP4文件是否需要处理（moov原子是否已经在文件开头）"""
+        try:
+            # 使用ffprobe检查moov原子位置
+            cmd = [self.ffmpeg_path, "-v", "trace", "-i", mp4_file]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            stderr_output = result.stderr
+            
+            # 检查是否已经是faststart格式
+            # 如果文件已经是faststart格式，stderr中会包含"moov atom is before mdat atom"
+            if "moov atom is before mdat atom" in stderr_output:
+                self._log(f"文件已经是faststart格式: {os.path.basename(mp4_file)}", "INFO")
+                return False
+            
+            # 检查是否有moov在mdat之后的情况
+            if "mdat atom is before moov atom" in stderr_output:
+                self._log(f"检测到moov在mdat之后: {os.path.basename(mp4_file)}", "INFO")
+                return True
+            
+            # 使用更直接的方法：尝试用faststart选项处理文件
+            # 创建临时文件路径
+            temp_output = os.path.join(os.path.dirname(mp4_file), f"temp_{os.path.basename(mp4_file)}")
+            
+            # 尝试应用faststart
+            cmd = [self.ffmpeg_path, "-i", mp4_file, "-c", "copy", "-movflags", "+faststart", "-y", temp_output]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            # 比较文件大小
+            if os.path.exists(temp_output):
+                original_size = os.path.getsize(mp4_file)
+                processed_size = os.path.getsize(temp_output)
+                size_diff_percent = abs(original_size - processed_size) / original_size * 100
+                
+                # 删除临时文件
+                try:
+                    os.remove(temp_output)
+                except Exception:
+                    pass
+                
+                # 如果处理前后文件大小差异超过1%，说明文件结构有变化，需要处理
+                if size_diff_percent > 1:
+                    self._log(f"文件结构需要优化: {os.path.basename(mp4_file)}", "INFO")
+                    return True
+            
+            # 默认不需要处理
+            return False
+        except Exception as e:
+            self._log(f"检查文件时出错: {str(e)}", "WARNING")
+            return True  # 出错时默认需要处理
     
     def process_files(self):
         """处理所有MP4文件"""
         # 检查并下载FFmpeg
         if not self.ffmpeg_path:
             if not self._download_ffmpeg():
-                self._log("无法获取FFmpeg，程序退出")
+                self._log("无法获取FFmpeg，程序退出", "ERROR")
                 return False
         
         # 创建输出目录
@@ -241,18 +323,20 @@ class MP4MoovFixer:
         mp4_files = [f for f in os.listdir(self.input_dir) if f.lower().endswith('.mp4')]
         
         if not mp4_files:
-            self._log("没有找到MP4文件")
+            self._log("没有找到MP4文件", "WARNING")
             return True
         
-        self._log(f"找到 {len(mp4_files)} 个MP4文件，开始处理...")
+        self._log(f"找到 {len(mp4_files)} 个MP4文件，开始处理...", "INFO")
+        self._log("-" * 50)
         
         # 处理每个文件
         success_count = 0
         fail_count = 0
+        skipped_count = 0
         
         for i, mp4_file in enumerate(mp4_files):
             if self.stop_flag:
-                self._log("处理已取消")
+                self._log("处理已取消", "WARNING")
                 return False
             
             input_path = os.path.join(self.input_dir, mp4_file)
@@ -263,22 +347,70 @@ class MP4MoovFixer:
             if self.progress_callback:
                 self.progress_callback(progress_percent, f"处理中: {mp4_file}")
             
-            # 处理文件
-            if self._fix_moov_position(input_path, output_path):
-                success_count += 1
-                self._log(f"已处理: {mp4_file}")
-            else:
-                fail_count += 1
+            # 文件处理开始标记
+            self._log(f"开始处理文件 ({i+1}/{len(mp4_files)}): {mp4_file}", "INFO")
             
-        self._log(f"处理完成！成功: {success_count} 个文件, 失败: {fail_count} 个文件")
+            # 检查是否需要处理
+            needs_processing = self._check_needs_processing(input_path)
+            
+            if needs_processing:
+                # 需要处理，使用FFmpeg修复
+                self._log(f"  - 状态: 需要修复moov原子位置", "INFO")
+                if self._fix_moov_position(input_path, output_path):
+                    success_count += 1
+                    self._log(f"  - 结果: 修复成功", "SUCCESS")
+                else:
+                    fail_count += 1
+                    self._log(f"  - 结果: 修复失败", "ERROR")
+            else:
+                # 不需要处理，直接复制到输出目录
+                self._log(f"  - 状态: 无需修复，直接复制", "INFO")
+                try:
+                    shutil.copy2(input_path, output_path)
+                    skipped_count += 1
+                    self._log(f"  - 结果: 复制成功", "SUCCESS")
+                except Exception as e:
+                    self._log(f"  - 结果: 复制失败 - {str(e)}", "ERROR")
+                    fail_count += 1
+            
+            # 文件处理结束分隔符
+            self._log("-" * 30)
+            
+        # 保存统计数据作为实例属性，以便UI可以访问
+        self.success_count = success_count
+        self.fail_count = fail_count
+        self.skipped_count = skipped_count
+        
+        self._log(f"处理完成！成功修复: {success_count} 个文件, 直接复制: {skipped_count} 个文件, 失败: {fail_count} 个文件")
         self._log(f"处理后的文件保存在: {self.output_dir}")
         return True
     
-    def _log(self, message):
+    def _log(self, message, level="INFO"):
         """记录日志，同时更新UI（如果有）"""
-        print(message)
+        # 添加时间戳和日志级别
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 根据日志级别设置不同的前缀样式
+        level_prefix = {
+            "INFO": "ℹ️",
+            "WARNING": "⚠️",
+            "ERROR": "❌",
+            "SUCCESS": "✅"
+        }.get(level, "")
+        
+        formatted_message = f"[{timestamp}] {level_prefix} {message}"
+        
+        # 打印到控制台
+        print(formatted_message)
+        
+        # 如果有UI回调，更新UI
         if self.log_callback:
-            self.log_callback(message)
+            self.log_callback(formatted_message)
+            
+        # 将日志添加到内存中的日志列表
+        if not hasattr(self, 'log_entries'):
+            self.log_entries = []
+        self.log_entries.append(formatted_message)
     
     def cancel_processing(self):
         """取消正在进行的处理"""
@@ -373,12 +505,14 @@ class MP4MoovFixerApp:
         # 配置section的列权重
         section.grid_columnconfigure(0, weight=1)
         
+        # 当前处理文件标签
+        self.progress_label = ttk.Label(section, text="准备就绪", font=self.font)
+        self.progress_label.grid(row=0, column=0, columnspan=2, sticky="w", padx=5, pady=2)
+        
+        # 进度条放在第二行
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(section, variable=self.progress_var, length=100, mode='determinate')
-        self.progress_bar.grid(row=0, column=0, sticky="ew", padx=5, pady=2)
-        
-        self.progress_label = ttk.Label(section, text="准备就绪", font=self.font)
-        self.progress_label.grid(row=0, column=1, padx=5, pady=2)
+        self.progress_bar.grid(row=1, column=0, sticky="ew", padx=5, pady=2)
     
     def create_button_section(self):
         # 添加分隔符
@@ -388,25 +522,27 @@ class MP4MoovFixerApp:
         section = ttk.Frame(self.main_frame, padding="5")
         section.grid(row=5, column=0, sticky="ew", pady=5)
         
-        # 配置section的列权重，确保按钮居中
-        section.grid_columnconfigure(0, weight=1)
-        section.grid_columnconfigure(1, weight=0)
-        section.grid_columnconfigure(2, weight=0)
-        section.grid_columnconfigure(3, weight=1)
+        # 使用一行布局，按钮均匀分布
+        # 配置section的列权重
+        section.grid_columnconfigure(0, weight=1)  # 左边距
+        for i in range(1, 5):  # 按钮列
+            section.grid_columnconfigure(i, weight=0)
+        section.grid_columnconfigure(5, weight=1)  # 右边距
         
-        # 左侧按钮
-        self.start_btn = ttk.Button(section, text="开始处理", command=self.start_processing, width=15)
+        # 所有按钮放在一行，统一宽度为12
+        button_width = 12
+        
+        self.start_btn = ttk.Button(section, text="开始处理", command=self.start_processing, width=button_width)
         self.start_btn.grid(row=0, column=1, padx=5, pady=5)
         
-        self.cancel_btn = ttk.Button(section, text="取消", command=self.cancel_processing, width=15, state=tk.DISABLED)
+        self.cancel_btn = ttk.Button(section, text="取消", command=self.cancel_processing, width=button_width, state=tk.DISABLED)
         self.cancel_btn.grid(row=0, column=2, padx=5, pady=5)
         
-        # 右侧按钮
-        self.open_output_btn = ttk.Button(section, text="打开输出文件夹", command=self.open_output_folder, width=15)
-        self.open_output_btn.grid(row=0, column=4, padx=5, pady=5)
+        self.export_log_btn = ttk.Button(section, text="导出日志", command=self.export_log, width=button_width)
+        self.export_log_btn.grid(row=0, column=3, padx=5, pady=5)
         
-        # 额外配置列权重以确保按钮位置正确
-        section.grid_columnconfigure(4, weight=0)
+        self.open_output_btn = ttk.Button(section, text="打开输出文件夹", command=self.open_output_folder, width=button_width)
+        self.open_output_btn.grid(row=0, column=4, padx=5, pady=5)
     
     def browse_input_dir(self):
         directory = filedialog.askdirectory(title="选择MP4文件所在目录", initialdir=self.input_dir)
@@ -418,10 +554,55 @@ class MP4MoovFixerApp:
         self.input_dir_var.set(self.input_dir)
     
     def log(self, message):
+        """更新UI日志显示"""
         self.log_text.config(state=tk.NORMAL)
-        self.log_text.insert(tk.END, message + "\n")
+        
+        # 根据日志级别设置不同的文本颜色
+        tag = None
+        if "❌" in message:  # 错误
+            tag = "error"
+            self.log_text.tag_configure("error", foreground="red")
+        elif "⚠️" in message:  # 警告
+            tag = "warning"
+            self.log_text.tag_configure("warning", foreground="orange")
+        elif "✅" in message:  # 成功
+            tag = "success"
+            self.log_text.tag_configure("success", foreground="green")
+        
+        # 插入文本并应用标签
+        self.log_text.insert(tk.END, message + "\n", tag)
         self.log_text.see(tk.END)
         self.log_text.config(state=tk.DISABLED)
+        
+        # 保存日志到内存中，用于导出
+        if not hasattr(self, 'log_entries'):
+            self.log_entries = []
+        self.log_entries.append(message)
+    
+    def export_log(self):
+        """导出日志到文件"""
+        if not hasattr(self, 'log_entries') or not self.log_entries:
+            messagebox.showinfo("提示", "没有可导出的日志")
+            return
+            
+        # 选择保存位置
+        file_path = filedialog.asksaveasfilename(
+            title="保存日志文件",
+            defaultextension=".txt",
+            filetypes=[("文本文件", "*.txt"), ("所有文件", "*.*")],
+            initialdir=self.input_dir
+        )
+        
+        if not file_path:
+            return  # 用户取消了保存
+            
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(self.log_entries))
+            messagebox.showinfo("成功", f"日志已保存到: {file_path}")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存日志失败: {str(e)}")
+
     
     def update_progress(self, value, status=None):
         self.progress_var.set(value)
@@ -476,9 +657,27 @@ class MP4MoovFixerApp:
         
         if success:
             self.update_progress(100, "处理完成")
-            messagebox.showinfo("成功", "所有文件处理完成！")
+            # 获取处理统计信息
+            success_count = 0
+            fail_count = 0
+            skipped_count = 0
+            if hasattr(self.fixer, 'success_count'):
+                success_count = self.fixer.success_count
+            if hasattr(self.fixer, 'fail_count'):
+                fail_count = self.fixer.fail_count
+            if hasattr(self.fixer, 'skipped_count'):
+                skipped_count = self.fixer.skipped_count
+                
+            message = f"处理完成！\n\n成功修复: {success_count} 个文件\n直接复制: {skipped_count} 个文件\n失败: {fail_count} 个文件"
+            
+            # 如果有失败的文件，添加提示信息
+            if fail_count > 0:
+                message += "\n\n注意：有些文件处理失败，请查看日志了解详情。"
+                
+            messagebox.showinfo("处理结果", message)
         else:
             self.update_progress(0, "处理失败")
+            messagebox.showerror("处理失败", "处理过程中发生错误，请查看日志了解详情。")
     
     def cancel_processing(self):
         if messagebox.askyesno("确认取消", "确定要取消处理吗？"):

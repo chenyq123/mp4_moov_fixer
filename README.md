@@ -21,9 +21,10 @@ MP4视频文件包含一个称为"moov原子"的数据结构，它包含视频�
 - 对于直接运行Python脚本：
   - Python 3.6 或更高版本
   - 依赖包：tqdm、requests
+  - tkinter（Python的标准GUI库，通常随Python一起安装，但某些系统可能需要单独安装）
 - 对于使用打包后的EXE文件：
   - 无需安装Python环境
-  - 仅支持Windows操作系统
+  - 支持Windows和macOS操作系统
 
 ## 安装指南
 
@@ -36,6 +37,18 @@ MP4视频文件包含一个称为"moov原子"的数据结构，它包含视频�
 ```bash
 pip install -r requirements.txt
 ```
+
+3. 确保tkinter已安装（Python的标准GUI库）：
+   - Windows：通常随Python一起安装
+   - macOS：通常随Python一起安装
+   - Linux (Ubuntu/Debian)：
+     ```bash
+     sudo apt-get install python3-tk
+     ```
+   - Linux (Fedora)：
+     ```bash
+     sudo dnf install python3-tkinter
+     ```
 
 ### 方法2：打包成EXE文件
 

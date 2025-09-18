@@ -86,6 +86,10 @@ class AppPackager:
             "--specpath", self.spec_dir,
             # 确保中文显示正常
             "--hidden-import", "tkinter",
+            "--hidden-import", "tkinter.filedialog",
+            "--hidden-import", "tkinter.ttk",
+            "--hidden-import", "tkinter.scrolledtext",
+            "--hidden-import", "tkinter.messagebox",
             "--hidden-import", "tqdm",
             "--hidden-import", "requests",
             # 添加图标（如果有的话）
@@ -130,6 +134,10 @@ class AppPackager:
             "--specpath", self.spec_dir,
             # 确保中文显示正常
             "--hidden-import", "tkinter",
+            "--hidden-import", "tkinter.filedialog",
+            "--hidden-import", "tkinter.ttk",
+            "--hidden-import", "tkinter.scrolledtext",
+            "--hidden-import", "tkinter.messagebox",
             "--hidden-import", "tqdm",
             "--hidden-import", "requests",
             # 添加图标（如果有的话）
