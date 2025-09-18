@@ -13,13 +13,14 @@ from tkinter import filedialog, ttk, scrolledtext, messagebox
 import threading
 
 class MP4MoovFixer:
-    def __init__(self, input_dir=None, output_dir="processed_videos", log_callback=None, progress_callback=None):
+    def __init__(self, input_dir=None, output_dir="processed_videos", log_callback=None, progress_callback=None, skip_detection=False):
         self.input_dir = input_dir if input_dir else os.getcwd()
         self.output_dir = os.path.join(self.input_dir, output_dir)
         self.ffmpeg_path = self._get_ffmpeg_path()
         self.log_callback = log_callback  # 用于UI日志更新的回调函数
         self.progress_callback = progress_callback  # 用于UI进度条更新的回调函数
         self.stop_flag = False  # 用于取消处理的标志
+        self.skip_detection = skip_detection  # 是否跳过moov检测，直接全部转换
     
     def _get_ffmpeg_path(self):
         """获取FFmpeg可执行文件路径"""
@@ -199,33 +200,132 @@ class MP4MoovFixer:
     
     def _is_moov_at_end(self, mp4_file):
         """检查MP4文件的moov原子是否在文件末尾"""
-        try:
-            # 使用ffprobe检查视频信息
-            cmd = [self.ffmpeg_path, "-v", "error", "-show_entries", "format=is_avc", 
-                   "-of", "default=noprint_wrappers=1:nokey=1", mp4_file]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+        # self._log(f"开始检查moov原子位置: {os.path.basename(mp4_file)}", "DEBUG")
+        
+        # try:
+        #     # 检查是否存在ffprobe可执行文件（ffprobe通常与ffmpeg在同一目录）
+        #     ffprobe_path = os.path.join(os.path.dirname(self.ffmpeg_path), "ffprobe.exe" if sys.platform == 'win32' else "ffprobe")
             
-            # 更可靠的方法是检查文件结构
-            cmd = [self.ffmpeg_path, "-i", mp4_file, "-c", "copy", "-movflags", "+faststart", 
-                   "-f", "mp4", "-y", "NUL" if sys.platform == "win32" else "/dev/null"]
-            subprocess.run(cmd, capture_output=True)
+        #     # 首先尝试使用ffprobe进行检测
+        #     if os.path.exists(ffprobe_path):
+        #         self._log(f"使用ffprobe检测moov位置", "DEBUG")
+                
+        #         # 使用ffprobe trace模式获取详细的原子信息
+        #         cmd = [ffprobe_path, "-v", "trace", "-i", mp4_file]
+        #         kwargs = {'capture_output': True, 'text': True}
+        #         if sys.platform == 'win32':
+        #             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
+        #         # 添加超时处理
+        #         try:
+        #             result = subprocess.run(cmd, timeout=30, **kwargs)
+                    
+        #             # 尝试从stdout和stderr都获取输出
+        #             ffprobe_output = (result.stdout or "") + (result.stderr or "")
+                    
+        #             # 输出部分ffprobe结果用于调试
+        #             debug_output = ffprobe_output[:500] if len(ffprobe_output) > 500 else ffprobe_output
+        #             self._log(f"ffprobe输出前500字符: {debug_output}", "DEBUG")
+                    
+        #             # 查找moov相关的关键词
+        #             has_moov_at_end = ("moov atom not found" in ffprobe_output.lower() or 
+        #                               "moov atom at end" in ffprobe_output.lower() or
+        #                               "moov not found" in ffprobe_output.lower())
+                    
+        #             return has_moov_at_end
+                    
+        #         except subprocess.TimeoutExpired:
+        #             self._log(f"ffprobe命令执行超时，尝试直接分析文件结构", "WARNING")
+                    
+        #     # 如果ffprobe不可用或超时，尝试直接读取文件二进制内容
+        #     self._log(f"尝试直接分析文件二进制内容", "DEBUG")
             
-            # 实际上，我们可以直接使用ffmpeg的faststart选项重新编码，不需要预先检查
-            return True
-        except Exception:
-            return True  # 默认假设需要处理
+        #     # 直接读取文件末尾的部分内容进行快速检查
+        #     try:
+        #         file_size = os.path.getsize(mp4_file)
+        #         # 定义要读取的文件末尾大小（至少读取10KB）
+        #         read_size = min(10 * 1024, file_size)
+                
+        #         with open(mp4_file, 'rb') as f:
+        #             f.seek(max(0, file_size - read_size))
+        #             file_end_data = f.read(read_size)
+                
+        #         # 检查文件末尾是否包含moov原子标识
+        #         moov_at_end = b'moov' in file_end_data
+                
+        #         # 如果在末尾找到moov原子，那么它很可能在文件的最后位置
+        #         self._log(f"文件末尾检测到moov原子: {moov_at_end}", "DEBUG")
+                
+        #         return moov_at_end
+                
+        #     except Exception as e:
+        #         self._log(f"直接分析文件结构失败: {e}", "ERROR")
+                
+        # except Exception as e:
+        #     self._log(f"moov位置检查失败: {e}", "ERROR")
+        
+        # # 如果所有方法都失败，默认返回True，假设需要处理
+        # self._log(f"无法确定moov位置，默认假设需要处理", "WARNING")
+        return True
     
     def _fix_moov_position(self, input_file, output_file):
         """使用FFmpeg将moov原子移到文件开头"""
         try:
+            self._log(f"开始修复moov原子位置: {os.path.basename(input_file)}", "DEBUG")
+            
+            # 确保输出目录存在
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            
+            # 使用更健壮的命令执行方式
             cmd = [self.ffmpeg_path, "-i", input_file, "-c", "copy", "-movflags", 
                    "+faststart", "-y", output_file]
-            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            
+            # 添加creationflags参数以避免在Windows上弹出黑框
+            kwargs = {'check': False, 'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                
+            self._log(f"执行ffmpeg命令: {' '.join(cmd)}", "DEBUG")
+            
+            # 添加超时处理
+            try:
+                result = subprocess.run(cmd, timeout=120, **kwargs)
+                
+                # 记录命令执行结果和错误信息
+                self._log(f"ffmpeg命令退出码: {result.returncode}", "DEBUG")
+                if result.stderr:
+                    stderr_content = result.stderr.decode('utf-8', errors='ignore')
+                    self._log(f"ffmpeg stderr输出前200字符: {stderr_content[:200]}", "DEBUG")
+                
+                # 检查命令是否执行成功
+                if result.returncode != 0:
+                    self._log(f"ffmpeg命令执行失败，退出码: {result.returncode}", "ERROR")
+                    return False
+                
+            except subprocess.TimeoutExpired:
+                self._log(f"ffmpeg处理超时: {os.path.basename(input_file)}", "ERROR")
+                # 删除可能残留的输出文件
+                if os.path.exists(output_file):
+                    try:
+                        os.remove(output_file)
+                    except:
+                        pass
+                return False
             
             # 检查转换后视频的大小
             if os.path.exists(output_file):
                 input_size = os.path.getsize(input_file)
                 output_size = os.path.getsize(output_file)
+                
+                # 确保输出文件不为空
+                if output_size == 0:
+                    self._log(f"警告：转换后文件为空 {input_file}", "WARNING")
+                    try:
+                        os.remove(output_file)
+                    except:
+                        pass
+                    return False
+                
                 size_diff_percent = abs(input_size - output_size) / input_size * 100
                 
                 # 如果输出文件大小与输入文件相差超过10%，视为转换失败
@@ -245,10 +345,16 @@ class MP4MoovFixer:
                 else:
                     self._log(f"文件大小校验通过: {os.path.basename(input_file)}")
                     self._log(f"  - 原始大小: {input_size/1024/1024:.2f} MB, 转换后: {output_size/1024/1024:.2f} MB")
+            else:
+                self._log(f"警告：转换后文件不存在 {input_file}", "WARNING")
+                return False
             
             return True
         except Exception as e:
-            self._log(f"处理文件失败 {input_file}: {e}")
+            self._log(f"处理文件失败 {input_file}: {str(e)}", "ERROR")
+            # 输出详细的错误信息
+            import traceback
+            self._log(f"错误详情: {traceback.format_exc()}", "DEBUG")
             # 删除可能残留的输出文件
             if os.path.exists(output_file):
                 try:
@@ -261,48 +367,304 @@ class MP4MoovFixer:
     def _check_needs_processing(self, mp4_file):
         """检查MP4文件是否需要处理（moov原子是否已经在文件开头）"""
         try:
-            # 使用ffprobe检查moov原子位置
+            self._log(f"开始检查文件: {os.path.basename(mp4_file)}", "DEBUG")
+            
+            # 检查是否存在ffprobe可执行文件（ffprobe通常与ffmpeg在同一目录）
+            ffprobe_path = os.path.join(os.path.dirname(self.ffmpeg_path), "ffprobe.exe" if sys.platform == 'win32' else "ffprobe")
+            use_ffprobe = os.path.exists(ffprobe_path)
+            self._log(f"ffprobe路径: {ffprobe_path}, 是否存在: {use_ffprobe}", "DEBUG")
+            
+            # 优先使用ffprobe进行检测，因为它专门用于分析媒体文件
+            if use_ffprobe:
+                try:
+                    self._log(f"使用ffprobe进行检测", "DEBUG")
+                    # 使用ffprobe trace模式获取详细的原子信息，与用户命令行方式一致
+                    cmd = [ffprobe_path, "-v", "trace", "-i", mp4_file]
+                    kwargs = {'capture_output': True, 'text': True}
+                    if sys.platform == 'win32':
+                        kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+                    
+                    self._log(f"执行ffprobe命令: {' '.join(cmd)}", "DEBUG")
+                    
+                    # 使用更健壮的命令执行方式，增加超时和重试机制
+                    try:
+                        result = subprocess.run(cmd, timeout=30, **kwargs)
+                    except subprocess.TimeoutExpired:
+                        self._log(f"ffprobe命令执行超时，尝试使用简化参数", "WARNING")
+                        # 使用更简单的参数进行重试
+                        cmd = [ffprobe_path, "-show_format", "-show_streams", "-i", mp4_file]
+                        result = subprocess.run(cmd, timeout=15, **kwargs)
+                    
+                    # 尝试从stdout和stderr都获取输出
+                    ffprobe_output = (result.stdout or "") + (result.stderr or "")
+                    
+                    # 输出部分ffprobe结果用于调试
+                    debug_output = ffprobe_output[:500] if len(ffprobe_output) > 500 else ffprobe_output
+                    self._log(f"ffprobe输出前500字符: {debug_output}", "DEBUG")
+                    self._log(f"ffprobe输出长度: {len(ffprobe_output)}字符", "DEBUG")
+                    
+                    # 如果ffprobe输出为空，尝试直接读取文件二进制内容来检测moov位置
+                    if not ffprobe_output.strip():
+                        self._log(f"ffprobe未返回输出，尝试直接分析文件结构", "WARNING")
+                        # 使用文件系统方法检查文件末尾是否包含moov原子
+                        try:
+                            file_size = os.path.getsize(mp4_file)
+                            # 读取文件末尾的部分内容进行快速检查
+                            with open(mp4_file, 'rb') as f:
+                                f.seek(max(0, file_size - 1024 * 10))  # 读取最后10KB
+                                end_data = f.read()
+                            # 检查是否包含moov原子标识
+                            if b'moov' in end_data:
+                                self._log(f"文件尾部检测到moov原子，需要处理: {os.path.basename(mp4_file)}", "INFO")
+                                return True
+                        except Exception as e:
+                            self._log(f"直接分析文件结构失败: {str(e)}", "DEBUG")
+                    
+                    # 分析ffprobe输出，寻找moov原子的偏移量信息
+                    # 用户命令行输出示例：[mov,mp4,m4a,3gp,3g2,mj2 @ 000002f9338a3700] type:'moov' parent:'root' sz: 18822 41660193 41679007
+                    import re
+                    # 增强正则表达式，匹配更多可能的格式变化
+                    moov_patterns = [
+                        r"type:'moov' parent:'root' sz: (\d+) (\d+) (\d+)",
+                        r"type:\s*'moov'\s+parent:\s*'root'\s+sz:\s+(\d+)\s+(\d+)\s+(\d+)",
+                        r"moov\s+\(offset: (\d+), size: (\d+)\)",
+                        r"moov\s+atom\s+at\s+position\s+(\d+)",
+                        r"moov\s+at\s+offset\s+(\d+)",
+                        r"moov\s+size\s+(\d+)\s+offset\s+(\d+)"
+                    ]
+                    
+                    found_match = False
+                    for pattern in moov_patterns:
+                        moov_matches = re.finditer(pattern, ffprobe_output)
+                        for match in moov_matches:
+                            found_match = True
+                            try:
+                                # 根据不同的正则表达式匹配结果进行处理
+                                if len(match.groups()) == 3:
+                                    atom_size = int(match.group(1))
+                                    moov_offset = int(match.group(2))
+                                    file_size = int(match.group(3))
+                                elif len(match.groups()) == 2:
+                                    moov_offset = int(match.group(1))
+                                    atom_size = int(match.group(2))
+                                    file_size = os.path.getsize(mp4_file)
+                                else:
+                                    moov_offset = int(match.group(1))
+                                    atom_size = 0
+                                    file_size = os.path.getsize(mp4_file)
+                                
+                                self._log(f"匹配到moov原子信息: size={atom_size}, offset={moov_offset}, file_size={file_size}", "DEBUG")
+                                
+                                # 计算moov原子相对于文件大小的位置百分比
+                                moov_position_percent = (moov_offset / file_size) * 100
+                                self._log(f"moov原子位置百分比: {moov_position_percent:.2f}%", "DEBUG")
+                                
+                                # 如果moov原子位于文件的90%之后，认为是后置的
+                                if moov_position_percent > 90:
+                                    self._log(f"ffprobe检测到moov在文件尾部（偏移量: {moov_offset}, 文件大小: {file_size}）: {os.path.basename(mp4_file)}", "INFO")
+                                    return True
+                                # 如果moov原子位于文件的10%之前，认为是前置的
+                                elif moov_position_percent < 10:
+                                    self._log(f"ffprobe检测到moov在文件开头: {os.path.basename(mp4_file)}", "INFO")
+                                    return False
+                            except Exception as e:
+                                self._log(f"解析moov原子信息时出错: {str(e)}", "DEBUG")
+                                continue
+                    
+                    if not found_match:
+                        self._log(f"未找到moov原子的偏移量信息，尝试其他方法", "DEBUG")
+                        
+                        # 检查输出中是否有mdat出现在moov之前的线索
+                        if "mdat" in ffprobe_output and "moov" in ffprobe_output:
+                            mdat_pos = ffprobe_output.find("mdat")
+                            moov_pos = ffprobe_output.find("moov")
+                            self._log(f"mdat位置: {mdat_pos}, moov位置: {moov_pos}", "DEBUG")
+                            if mdat_pos < moov_pos:
+                                self._log(f"ffprobe输出中mdat先于moov出现，文件需要处理: {os.path.basename(mp4_file)}", "INFO")
+                                return True
+                        else:
+                            self._log(f"ffprobe输出中未同时找到mdat和moov关键词", "DEBUG")
+                    
+                    # 检查encoder信息作为补充
+                    self._log(f"尝试检查encoder信息", "DEBUG")
+                    cmd_encoder = [ffprobe_path, "-v", "error", "-show_entries", "format_tags=encoder", "-of", "default=noprint_wrappers=1:nokey=1", mp4_file]
+                    self._log(f"执行encoder检查命令: {' '.join(cmd_encoder)}", "DEBUG")
+                    result_encoder = subprocess.run(cmd_encoder, **kwargs)
+                    encoder_info = (result_encoder.stdout or "").strip().lower()
+                    self._log(f"encoder信息: '{encoder_info}'", "DEBUG")
+                    if "faststart" in encoder_info:
+                        self._log(f"ffprobe检测到faststart格式: {os.path.basename(mp4_file)}", "INFO")
+                        return False
+                except Exception as e:
+                    self._log(f"ffprobe检测失败: {str(e)}", "DEBUG")
+                    # ffprobe检测失败，回退到ffmpeg方式
+                    pass
+            
+            # 使用ffmpeg trace模式作为备选方法
+            self._log(f"ffprobe检测未成功，使用ffmpeg trace模式", "DEBUG")
             cmd = [self.ffmpeg_path, "-v", "trace", "-i", mp4_file]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            stderr_output = result.stderr
+            kwargs = {'capture_output': True, 'text': True}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            
+            self._log(f"执行ffmpeg命令: {' '.join(cmd)}", "DEBUG")
+            result = subprocess.run(cmd, **kwargs)
+            stderr_output = result.stderr or ""  # 确保stderr_output不是None
+            self._log(f"ffmpeg输出长度: {len(stderr_output)}字符", "DEBUG")
+            
+            # 检查是否已经是faststart格式 - 支持多种可能的关键词
+            faststart_keywords = [
+                "moov atom is before mdat atom",
+                "moov before mdat",
+                "moov found at beginning",
+                "moov at start",
+                "faststart enabled",
+                "moov placed at front"
+            ]
+            
+            # 检查是否需要处理 - 支持多种可能的关键词
+            needs_processing_keywords = [
+                "mdat atom is before moov atom",
+                "moov after mdat",
+                "moov found at end",
+                "moov atom at the end",
+                "moov atom is after mdat atom",
+                "moov at end",
+                "moov located after mdat",
+                "moov comes after mdat",
+                "moov last",
+                "moov原子位于文件尾部",
+                "需要faststart处理"
+            ]
+            
+            self._log(f"使用关键词列表进行检测", "DEBUG")
+            # 转为小写以实现大小写不敏感匹配
+            stderr_lower = stderr_output.lower()
+            
+            # 输出部分stderr用于调试
+            debug_stderr = stderr_lower[:500] if len(stderr_lower) > 500 else stderr_lower
+            self._log(f"ffmpeg stderr前500字符(lower): {debug_stderr}", "DEBUG")
             
             # 检查是否已经是faststart格式
-            # 如果文件已经是faststart格式，stderr中会包含"moov atom is before mdat atom"
-            if "moov atom is before mdat atom" in stderr_output:
-                self._log(f"文件已经是faststart格式: {os.path.basename(mp4_file)}", "INFO")
-                return False
+            for keyword in faststart_keywords:
+                if keyword.lower() in stderr_lower:
+                    self._log(f"匹配到faststart关键词 '{keyword}': {os.path.basename(mp4_file)}", "DEBUG")
+                    self._log(f"文件已经是faststart格式: {os.path.basename(mp4_file)}", "INFO")
+                    return False
             
             # 检查是否有moov在mdat之后的情况
-            if "mdat atom is before moov atom" in stderr_output:
-                self._log(f"检测到moov在mdat之后: {os.path.basename(mp4_file)}", "INFO")
-                return True
+            for keyword in needs_processing_keywords:
+                if keyword.lower() in stderr_lower:
+                    self._log(f"匹配到需要处理的关键词 '{keyword}': {os.path.basename(mp4_file)}", "DEBUG")
+                    self._log(f"检测到moov在mdat之后: {os.path.basename(mp4_file)}", "INFO")
+                    return True
+            
+            # 即使没有匹配到关键词，也检查mdat和moov在stderr中的出现顺序
+            self._log(f"未匹配到特定关键词，检查mdat和moov出现顺序", "DEBUG")
+            if "mdat" in stderr_lower and "moov" in stderr_lower:
+                # 查找所有mdat和moov的出现位置，进行全面比较
+                mdat_positions = []
+                moov_positions = []
+                
+                # 查找所有mdat的位置
+                pos = stderr_lower.find("mdat")
+                while pos != -1:
+                    mdat_positions.append(pos)
+                    pos = stderr_lower.find("mdat", pos + 1)
+                
+                # 查找所有moov的位置
+                pos = stderr_lower.find("moov")
+                while pos != -1:
+                    moov_positions.append(pos)
+                    pos = stderr_lower.find("moov", pos + 1)
+                
+                self._log(f"ffmpeg stderr中mdat位置列表: {mdat_positions}", "DEBUG")
+                self._log(f"ffmpeg stderr中moov位置列表: {moov_positions}", "DEBUG")
+                
+                # 检查是否存在mdat出现在moov之前的情况
+                has_mdat_before_moov = False
+                for mdat_pos in mdat_positions:
+                    for moov_pos in moov_positions:
+                        if mdat_pos < moov_pos:
+                            has_mdat_before_moov = True
+                            break
+                    if has_mdat_before_moov:
+                        break
+                
+                if has_mdat_before_moov:
+                    self._log(f"ffmpeg输出中发现mdat先于moov出现的情况，文件需要处理: {os.path.basename(mp4_file)}", "INFO")
+                    return True
+            
+            self._log(f"未匹配到任何关键词，尝试文件大小比较方法", "DEBUG")
             
             # 使用更直接的方法：尝试用faststart选项处理文件
+            self._log(f"尝试使用faststart处理并比较文件大小", "DEBUG")
             # 创建临时文件路径
             temp_output = os.path.join(os.path.dirname(mp4_file), f"temp_{os.path.basename(mp4_file)}")
             
-            # 尝试应用faststart
-            cmd = [self.ffmpeg_path, "-i", mp4_file, "-c", "copy", "-movflags", "+faststart", "-y", temp_output]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            # 比较文件大小
-            if os.path.exists(temp_output):
-                original_size = os.path.getsize(mp4_file)
-                processed_size = os.path.getsize(temp_output)
-                size_diff_percent = abs(original_size - processed_size) / original_size * 100
+            try:
+                # 尝试应用faststart
+                cmd = [self.ffmpeg_path, "-i", mp4_file, "-c", "copy", "-movflags", "+faststart", "-y", temp_output]
+                # 添加creationflags参数以避免在Windows上弹出黑框
+                kwargs = {'capture_output': True, 'text': True}
+                if sys.platform == 'win32':
+                    kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
                 
-                # 删除临时文件
-                try:
-                    os.remove(temp_output)
-                except Exception:
-                    pass
+                self._log(f"执行faststart命令: {' '.join(cmd)}", "DEBUG")
+                result = subprocess.run(cmd, **kwargs)
                 
-                # 如果处理前后文件大小差异超过1%，说明文件结构有变化，需要处理
-                if size_diff_percent > 1:
-                    self._log(f"文件结构需要优化: {os.path.basename(mp4_file)}", "INFO")
-                    return True
+                # 记录命令执行结果
+                self._log(f"faststart命令退出码: {result.returncode}", "DEBUG")
+                if result.stderr:
+                    self._log(f"faststart命令stderr输出长度: {len(result.stderr)}字符", "DEBUG")
+                    self._log(f"faststart命令stderr前200字符: {result.stderr[:200]}", "DEBUG")
             
-            # 默认不需要处理
+                # 比较文件大小
+                if os.path.exists(temp_output):
+                    original_size = os.path.getsize(mp4_file)
+                    processed_size = os.path.getsize(temp_output)
+                    size_diff_percent = abs(original_size - processed_size) / original_size * 100
+                    
+                    self._log(f"原文件大小: {original_size} bytes, 处理后大小: {processed_size} bytes, 差异: {size_diff_percent:.2f}%", "DEBUG")
+                    
+                    # 删除临时文件
+                    try:
+                        os.remove(temp_output)
+                        self._log(f"已删除临时文件: {temp_output}", "DEBUG")
+                    except Exception as e:
+                        self._log(f"删除临时文件失败: {str(e)}", "WARNING")
+                    
+                    # 如果处理前后文件大小差异超过1%，说明文件结构有变化，需要处理
+                    if size_diff_percent > 1:
+                        self._log(f"文件结构需要优化 (大小差异 {size_diff_percent:.2f}%): {os.path.basename(mp4_file)}", "INFO")
+                        return True
+                    else:
+                        self._log(f"文件大小差异较小 ({size_diff_percent:.2f}%), 可能已经是最优格式: {os.path.basename(mp4_file)}", "DEBUG")
+                else:
+                    self._log(f"临时文件不存在，faststart处理可能失败", "WARNING")
+            except Exception as e:
+                self._log(f"执行faststart命令时出错: {str(e)}", "WARNING")
+                
+            # 最后的保障措施：检查文件大小和扩展名
+            file_size = os.path.getsize(mp4_file)
+            is_mp4 = mp4_file.lower().endswith('.mp4')
+            
+            # 优先检查文件是否是MP4格式
+            if not is_mp4:
+                self._log(f"非MP4文件，跳过处理: {os.path.basename(mp4_file)}", "DEBUG")
+                return False
+            
+            # 对于大于5MB的MP4文件，默认认为可能需要处理（更保守的策略）
+            if file_size > 5 * 1024 * 1024:  # 从10MB降低到5MB，提高检测覆盖率
+                self._log(f"大文件保障措施: 大于5MB的MP4文件默认处理: {os.path.basename(mp4_file)}", "INFO")
+                return True
+            
+            # 对于所有MP4文件，无论大小，都尝试处理（最保守的策略）
+            self._log(f"安全保障: 所有MP4文件都尝试进行moov前置处理: {os.path.basename(mp4_file)}", "DEBUG")
+            return True
+            
+            # 所有检测都未匹配，返回不需要处理
+            self._log(f"所有检测方法都未发现需要处理的情况: {os.path.basename(mp4_file)}", "DEBUG")
             return False
         except Exception as e:
             self._log(f"检查文件时出错: {str(e)}", "WARNING")
@@ -350,28 +712,39 @@ class MP4MoovFixer:
             # 文件处理开始标记
             self._log(f"开始处理文件 ({i+1}/{len(mp4_files)}): {mp4_file}", "INFO")
             
-            # 检查是否需要处理
-            needs_processing = self._check_needs_processing(input_path)
-            
-            if needs_processing:
-                # 需要处理，使用FFmpeg修复
-                self._log(f"  - 状态: 需要修复moov原子位置", "INFO")
+            # 检查是否跳过检测
+            if self.skip_detection:
+                # 跳过检测，直接全部转换
+                self._log(f"  - 状态: 跳过moov检测，直接转换", "INFO")
                 if self._fix_moov_position(input_path, output_path):
                     success_count += 1
-                    self._log(f"  - 结果: 修复成功", "SUCCESS")
+                    self._log(f"  - 结果: 转换成功", "SUCCESS")
                 else:
                     fail_count += 1
-                    self._log(f"  - 结果: 修复失败", "ERROR")
+                    self._log(f"  - 结果: 转换失败", "ERROR")
             else:
-                # 不需要处理，直接复制到输出目录
-                self._log(f"  - 状态: 无需修复，直接复制", "INFO")
-                try:
-                    shutil.copy2(input_path, output_path)
-                    skipped_count += 1
-                    self._log(f"  - 结果: 复制成功", "SUCCESS")
-                except Exception as e:
-                    self._log(f"  - 结果: 复制失败 - {str(e)}", "ERROR")
-                    fail_count += 1
+                # 正常流程：先检查是否需要处理
+                needs_processing = self._check_needs_processing(input_path)
+                
+                if needs_processing:
+                    # 需要处理，使用FFmpeg修复
+                    self._log(f"  - 状态: 需要修复moov原子位置", "INFO")
+                    if self._fix_moov_position(input_path, output_path):
+                        success_count += 1
+                        self._log(f"  - 结果: 修复成功", "SUCCESS")
+                    else:
+                        fail_count += 1
+                        self._log(f"  - 结果: 修复失败", "ERROR")
+                else:
+                    # 不需要处理，直接复制到输出目录
+                    self._log(f"  - 状态: 无需修复，直接复制", "INFO")
+                    try:
+                        shutil.copy2(input_path, output_path)
+                        skipped_count += 1
+                        self._log(f"  - 结果: 复制成功", "SUCCESS")
+                    except Exception as e:
+                        self._log(f"  - 结果: 复制失败 - {str(e)}", "ERROR")
+                        fail_count += 1
             
             # 文件处理结束分隔符
             self._log("-" * 30)
@@ -437,7 +810,10 @@ class MP4MoovFixerApp:
         # 配置主框架的列和行权重，使其能够随窗口调整
         self.main_frame.grid_columnconfigure(0, weight=1)
         for i in range(5):
-            self.main_frame.grid_rowconfigure(i, weight=1 if i == 2 else 0)
+            self.main_frame.grid_rowconfigure(i, weight=1 if i == 2 else 0)  # 调整行权重分配
+            
+        # 初始化跳过检测的变量，默认设为True
+        self.skip_detection = tk.BooleanVar(value=True)
         
         # 创建输入目录选择
         self.create_input_section()
@@ -476,15 +852,30 @@ class MP4MoovFixerApp:
         browse_btn.grid(row=0, column=1, padx=5, pady=2)
     
     def create_output_section(self):
-        section = ttk.LabelFrame(self.main_frame, text="输出目录名称", padding="5")
+        section = ttk.LabelFrame(self.main_frame, text="输出设置", padding="5")
         section.grid(row=1, column=0, sticky="ew", pady=5)
         
         # 配置section的列权重
         section.grid_columnconfigure(0, weight=1)
         
+        # 输出目录名称
         self.output_dir_var = tk.StringVar(value="processed_videos")
         output_entry = ttk.Entry(section, textvariable=self.output_dir_var, font=self.font)
         output_entry.grid(row=0, column=0, sticky="ew", padx=5, pady=2)
+        
+        # 跳过moov检测复选框
+        detection_frame = ttk.Frame(section)
+        detection_frame.grid(row=1, column=0, sticky="w", padx=5, pady=2)
+        
+        self.skip_detection_checkbox = ttk.Checkbutton(
+            detection_frame,
+            text="跳过moov检测，直接全部转换",
+            variable=self.skip_detection,
+            onvalue=True,
+            offvalue=False,
+            state=tk.DISABLED
+        )
+        self.skip_detection_checkbox.pack(side=tk.LEFT)
     
     def create_log_section(self):
         section = ttk.LabelFrame(self.main_frame, text="处理日志", padding="5")
@@ -494,7 +885,8 @@ class MP4MoovFixerApp:
         section.grid_columnconfigure(0, weight=1)
         section.grid_rowconfigure(0, weight=1)
         
-        self.log_text = scrolledtext.ScrolledText(section, wrap=tk.WORD, font=self.font)
+        # 设置日志框的高度，防止其占据过多空间
+        self.log_text = scrolledtext.ScrolledText(section, wrap=tk.WORD, font=self.font, height=15)
         self.log_text.grid(row=0, column=0, sticky="nsew", padx=5, pady=5)
         self.log_text.config(state=tk.DISABLED)
     
@@ -638,7 +1030,8 @@ class MP4MoovFixerApp:
                 input_dir=self.input_dir,
                 output_dir=self.output_dir_name,
                 log_callback=self.log,
-                progress_callback=self.update_progress
+                progress_callback=self.update_progress,
+                skip_detection=self.skip_detection.get()
             )
             
             # 处理文件
@@ -696,9 +1089,13 @@ class MP4MoovFixerApp:
             if sys.platform == 'win32':
                 os.startfile(output_path)
             elif sys.platform == 'darwin':
-                subprocess.run(['open', output_path])
+                # 添加creationflags参数以避免在macOS上弹出黑框
+                kwargs = {}
+                result = subprocess.run(['open', output_path], **kwargs)
             else:
-                subprocess.run(['xdg-open', output_path])
+                # 添加creationflags参数以避免在Linux上弹出黑框
+                kwargs = {}
+                result = subprocess.run(['xdg-open', output_path], **kwargs)
         else:
             messagebox.showwarning("警告", "输出文件夹不存在")
 
@@ -708,11 +1105,13 @@ def main():
         parser = argparse.ArgumentParser(description='自动修复MP4文件的moov原子位置')
         parser.add_argument('-i', '--input', help='输入目录路径，默认为当前目录')
         parser.add_argument('-o', '--output', help='输出目录名称，默认为"processed_videos"')
+        parser.add_argument('-s', '--skip-detection', action='store_true', help='跳过moov检测，直接全部转换')
         args = parser.parse_args()
         
         fixer = MP4MoovFixer(
             input_dir=args.input,
-            output_dir=args.output if args.output else "processed_videos"
+            output_dir=args.output if args.output else "processed_videos",
+            skip_detection=args.skip_detection
         )
         fixer.process_files()
     else:
