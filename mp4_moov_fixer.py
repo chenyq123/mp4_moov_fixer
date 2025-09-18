@@ -203,12 +203,20 @@ class MP4MoovFixer:
             # 使用ffprobe检查视频信息
             cmd = [self.ffmpeg_path, "-v", "error", "-show_entries", "format=is_avc", 
                    "-of", "default=noprint_wrappers=1:nokey=1", mp4_file]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            # 添加creationflags参数以避免在Windows上弹出黑框
+            kwargs = {'capture_output': True, 'text': True}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            result = subprocess.run(cmd, **kwargs)
             
             # 更可靠的方法是检查文件结构
             cmd = [self.ffmpeg_path, "-i", mp4_file, "-c", "copy", "-movflags", "+faststart", 
                    "-f", "mp4", "-y", "NUL" if sys.platform == "win32" else "/dev/null"]
-            subprocess.run(cmd, capture_output=True)
+            # 添加creationflags参数以避免在Windows上弹出黑框
+            kwargs = {'capture_output': True}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            subprocess.run(cmd, **kwargs)
             
             # 实际上，我们可以直接使用ffmpeg的faststart选项重新编码，不需要预先检查
             return True
@@ -220,7 +228,11 @@ class MP4MoovFixer:
         try:
             cmd = [self.ffmpeg_path, "-i", input_file, "-c", "copy", "-movflags", 
                    "+faststart", "-y", output_file]
-            result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            # 添加creationflags参数以避免在Windows上弹出黑框
+            kwargs = {'check': True, 'stdout': subprocess.PIPE, 'stderr': subprocess.PIPE}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            result = subprocess.run(cmd, **kwargs)
             
             # 检查转换后视频的大小
             if os.path.exists(output_file):
@@ -263,8 +275,12 @@ class MP4MoovFixer:
         try:
             # 使用ffprobe检查moov原子位置
             cmd = [self.ffmpeg_path, "-v", "trace", "-i", mp4_file]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            stderr_output = result.stderr
+            # 添加creationflags参数以避免在Windows上弹出黑框
+            kwargs = {'capture_output': True, 'text': True}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            result = subprocess.run(cmd, **kwargs)
+            stderr_output = result.stderr or ""  # 确保stderr_output不是None
             
             # 检查是否已经是faststart格式
             # 如果文件已经是faststart格式，stderr中会包含"moov atom is before mdat atom"
@@ -283,7 +299,11 @@ class MP4MoovFixer:
             
             # 尝试应用faststart
             cmd = [self.ffmpeg_path, "-i", mp4_file, "-c", "copy", "-movflags", "+faststart", "-y", temp_output]
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            # 添加creationflags参数以避免在Windows上弹出黑框
+            kwargs = {'capture_output': True, 'text': True}
+            if sys.platform == 'win32':
+                kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            result = subprocess.run(cmd, **kwargs)
             
             # 比较文件大小
             if os.path.exists(temp_output):
@@ -696,9 +716,13 @@ class MP4MoovFixerApp:
             if sys.platform == 'win32':
                 os.startfile(output_path)
             elif sys.platform == 'darwin':
-                subprocess.run(['open', output_path])
+                # 添加creationflags参数以避免在macOS上弹出黑框
+                kwargs = {}
+                result = subprocess.run(['open', output_path], **kwargs)
             else:
-                subprocess.run(['xdg-open', output_path])
+                # 添加creationflags参数以避免在Linux上弹出黑框
+                kwargs = {}
+                result = subprocess.run(['xdg-open', output_path], **kwargs)
         else:
             messagebox.showwarning("警告", "输出文件夹不存在")
 
