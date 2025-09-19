@@ -12,6 +12,9 @@ import tkinter as tk
 from tkinter import filedialog, ttk, scrolledtext, messagebox
 import threading
 
+# 版本号常量
+VERSION = "1.0.3"
+
 class MP4MoovFixer:
     def __init__(self, input_dir=None, output_dir="processed_videos", log_callback=None, progress_callback=None, skip_detection=False):
         self.input_dir = input_dir if input_dir else os.getcwd()
@@ -21,6 +24,8 @@ class MP4MoovFixer:
         self.progress_callback = progress_callback  # 用于UI进度条更新的回调函数
         self.stop_flag = False  # 用于取消处理的标志
         self.skip_detection = skip_detection  # 是否跳过moov检测，直接全部转换
+        self.log_entries = []  # 存储普通日志
+        self.debug_log_entries = []  # 单独存储调试日志
     
     def _get_ffmpeg_path(self):
         """获取FFmpeg可执行文件路径"""
@@ -198,76 +203,6 @@ class MP4MoovFixer:
             self._log(f"错误详情: {traceback.format_exc()}")
             return False
     
-    def _is_moov_at_end(self, mp4_file):
-        """检查MP4文件的moov原子是否在文件末尾"""
-        # self._log(f"开始检查moov原子位置: {os.path.basename(mp4_file)}", "DEBUG")
-        
-        # try:
-        #     # 检查是否存在ffprobe可执行文件（ffprobe通常与ffmpeg在同一目录）
-        #     ffprobe_path = os.path.join(os.path.dirname(self.ffmpeg_path), "ffprobe.exe" if sys.platform == 'win32' else "ffprobe")
-            
-        #     # 首先尝试使用ffprobe进行检测
-        #     if os.path.exists(ffprobe_path):
-        #         self._log(f"使用ffprobe检测moov位置", "DEBUG")
-                
-        #         # 使用ffprobe trace模式获取详细的原子信息
-        #         cmd = [ffprobe_path, "-v", "trace", "-i", mp4_file]
-        #         kwargs = {'capture_output': True, 'text': True}
-        #         if sys.platform == 'win32':
-        #             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-                
-        #         # 添加超时处理
-        #         try:
-        #             result = subprocess.run(cmd, timeout=30, **kwargs)
-                    
-        #             # 尝试从stdout和stderr都获取输出
-        #             ffprobe_output = (result.stdout or "") + (result.stderr or "")
-                    
-        #             # 输出部分ffprobe结果用于调试
-        #             debug_output = ffprobe_output[:500] if len(ffprobe_output) > 500 else ffprobe_output
-        #             self._log(f"ffprobe输出前500字符: {debug_output}", "DEBUG")
-                    
-        #             # 查找moov相关的关键词
-        #             has_moov_at_end = ("moov atom not found" in ffprobe_output.lower() or 
-        #                               "moov atom at end" in ffprobe_output.lower() or
-        #                               "moov not found" in ffprobe_output.lower())
-                    
-        #             return has_moov_at_end
-                    
-        #         except subprocess.TimeoutExpired:
-        #             self._log(f"ffprobe命令执行超时，尝试直接分析文件结构", "WARNING")
-                    
-        #     # 如果ffprobe不可用或超时，尝试直接读取文件二进制内容
-        #     self._log(f"尝试直接分析文件二进制内容", "DEBUG")
-            
-        #     # 直接读取文件末尾的部分内容进行快速检查
-        #     try:
-        #         file_size = os.path.getsize(mp4_file)
-        #         # 定义要读取的文件末尾大小（至少读取10KB）
-        #         read_size = min(10 * 1024, file_size)
-                
-        #         with open(mp4_file, 'rb') as f:
-        #             f.seek(max(0, file_size - read_size))
-        #             file_end_data = f.read(read_size)
-                
-        #         # 检查文件末尾是否包含moov原子标识
-        #         moov_at_end = b'moov' in file_end_data
-                
-        #         # 如果在末尾找到moov原子，那么它很可能在文件的最后位置
-        #         self._log(f"文件末尾检测到moov原子: {moov_at_end}", "DEBUG")
-                
-        #         return moov_at_end
-                
-        #     except Exception as e:
-        #         self._log(f"直接分析文件结构失败: {e}", "ERROR")
-                
-        # except Exception as e:
-        #     self._log(f"moov位置检查失败: {e}", "ERROR")
-        
-        # # 如果所有方法都失败，默认返回True，假设需要处理
-        # self._log(f"无法确定moov位置，默认假设需要处理", "WARNING")
-        return True
-    
     def _fix_moov_position(self, input_file, output_file):
         """使用FFmpeg将moov原子移到文件开头"""
         try:
@@ -293,13 +228,13 @@ class MP4MoovFixer:
                 
                 # 记录命令执行结果和错误信息
                 self._log(f"ffmpeg命令退出码: {result.returncode}", "DEBUG")
-                if result.stderr:
-                    stderr_content = result.stderr.decode('utf-8', errors='ignore')
-                    self._log(f"ffmpeg stderr输出前200字符: {stderr_content[:200]}", "DEBUG")
-                
                 # 检查命令是否执行成功
                 if result.returncode != 0:
-                    self._log(f"ffmpeg命令执行失败，退出码: {result.returncode}", "ERROR")
+                    if result.stderr:
+                        stderr_content = result.stderr.decode('utf-8', errors='ignore')
+                        # 错误时输出更多的ffmpeg日志内容
+                        self._log(f"ffmpeg命令执行失败，退出码: {result.returncode}", "ERROR")
+                    self._log(f"ffmpeg错误输出: {stderr_content[:500]}", "ERROR")
                     return False
                 
             except subprocess.TimeoutExpired:
@@ -672,6 +607,9 @@ class MP4MoovFixer:
     
     def process_files(self):
         """处理所有MP4文件"""
+        # 记录版本信息
+        self._log(f"MP4 Moov Fixer 版本: {VERSION}", "INFO")
+        
         # 检查并下载FFmpeg
         if not self.ffmpeg_path:
             if not self._download_ffmpeg():
@@ -768,10 +706,18 @@ class MP4MoovFixer:
             "INFO": "ℹ️",
             "WARNING": "⚠️",
             "ERROR": "❌",
-            "SUCCESS": "✅"
+            "SUCCESS": "✅",
+            "DEBUG": "🔧"
         }.get(level, "")
         
         formatted_message = f"[{timestamp}] {level_prefix} {message}"
+        
+        # 将所有日志（包括DEBUG）按时间顺序添加到统一的日志列表
+        self.log_entries.append(formatted_message)
+        
+        # 对于DEBUG级别的日志，不打印到控制台和UI，只记录在日志列表中
+        if level == "DEBUG":
+            return
         
         # 打印到控制台
         print(formatted_message)
@@ -779,11 +725,6 @@ class MP4MoovFixer:
         # 如果有UI回调，更新UI
         if self.log_callback:
             self.log_callback(formatted_message)
-            
-        # 将日志添加到内存中的日志列表
-        if not hasattr(self, 'log_entries'):
-            self.log_entries = []
-        self.log_entries.append(formatted_message)
     
     def cancel_processing(self):
         """取消正在进行的处理"""
@@ -792,7 +733,7 @@ class MP4MoovFixer:
 class MP4MoovFixerApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("MP4 Moov原子前置工具")
+        self.root.title(f"MP4 Moov原子前置工具 v{VERSION}")
         self.root.geometry("750x600")  # 进一步增大窗口尺寸
         self.root.minsize(700, 550)  # 调整最小窗口大小
         
@@ -836,6 +777,8 @@ class MP4MoovFixerApp:
         self.update_input_dir_display()
         self.is_processing = False
         self.fixer = None
+        self.log_entries = []  # 存储普通日志
+        self.debug_log_entries = []  # 存储调试日志
     
     def create_input_section(self):
         section = ttk.LabelFrame(self.main_frame, text="输入目录", padding="5")
@@ -972,8 +915,19 @@ class MP4MoovFixerApp:
         self.log_entries.append(message)
     
     def export_log(self):
-        """导出日志到文件"""
-        if not hasattr(self, 'log_entries') or not self.log_entries:
+        """导出日志到文件（包含debug日志）"""
+        # 合并所有日志（包括self和self.fixer中的）
+        all_logs = []
+        
+        # 1. 添加self.log_entries（已经包含所有级别的日志）
+        # if hasattr(self, 'log_entries'):
+        #     all_logs.extend(self.log_entries or [])
+        
+        # 2. 添加self.fixer.log_entries（如果有）
+        if hasattr(self, 'fixer') and self.fixer and hasattr(self.fixer, 'log_entries'):
+            all_logs.extend(self.fixer.log_entries or [])
+        
+        if not all_logs:
             messagebox.showinfo("提示", "没有可导出的日志")
             return
             
@@ -990,8 +944,10 @@ class MP4MoovFixerApp:
             
         try:
             with open(file_path, 'w', encoding='utf-8') as f:
-                f.write("\n".join(self.log_entries))
-            messagebox.showinfo("成功", f"日志已保存到: {file_path}")
+                # 写入所有按时间顺序排序的日志
+                f.write("\n".join(all_logs))
+                      
+            messagebox.showinfo("成功", f"日志已保存到: {file_path}\n\n(包含普通日志和调试信息)")
         except Exception as e:
             messagebox.showerror("错误", f"保存日志失败: {str(e)}")
 
@@ -1102,7 +1058,8 @@ class MP4MoovFixerApp:
 def main():
     # 检查参数，如果有命令行参数则使用命令行模式
     if len(sys.argv) > 1:
-        parser = argparse.ArgumentParser(description='自动修复MP4文件的moov原子位置')
+        parser = argparse.ArgumentParser(description=f'自动修复MP4文件的moov原子位置 (v{VERSION})')
+        parser.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
         parser.add_argument('-i', '--input', help='输入目录路径，默认为当前目录')
         parser.add_argument('-o', '--output', help='输出目录名称，默认为"processed_videos"')
         parser.add_argument('-s', '--skip-detection', action='store_true', help='跳过moov检测，直接全部转换')
